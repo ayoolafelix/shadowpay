@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { Transaction } from "@/lib/simClient";
-import { useLiveTransactionStore, useFilterStore } from "@/lib/store";
 import { formatAddress, formatUsd, formatTimestamp } from "@/lib/formatters";
 import Link from "next/link";
 import { clsx } from "clsx";
@@ -20,12 +19,12 @@ export function TransactionFeed({
   maxHeight = "max-h-[600px]",
   showFilters = true,
 }: TransactionFeedProps) {
-  const { liveTransactions, addTransactions } = useLiveTransactionStore();
-  const { incomingFilter, outgoingFilter, setIncomingFilter, setOutgoingFilter } =
-    useFilterStore();
-  const [isLive, setIsLive] = useState(true);
+  const [incomingFilter, setIncomingFilter] = useState(true);
+  const [outgoingFilter, setOutgoingFilter] = useState(true);
+  const [localTransactions, setLocalTransactions] = useState<Transaction[]>([]);
+  const [isLive, setIsLive] = useState(!transactions);
 
-  const displayTransactions = transactions || liveTransactions;
+  const displayTransactions = transactions || localTransactions;
 
   const filteredTransactions = displayTransactions.filter((tx) => {
     if (tx.type === "receive" && !incomingFilter) return false;
@@ -54,12 +53,12 @@ export function TransactionFeed({
           fee: 0.000005,
           status: "confirmed",
         };
-        addTransactions([mockTx]);
+        setLocalTransactions((prev) => [mockTx, ...prev].slice(0, 500));
       }, 3000);
 
       return () => clearInterval(interval);
     }
-  }, [isLive, transactions, addTransactions]);
+  }, [isLive, transactions]);
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm">

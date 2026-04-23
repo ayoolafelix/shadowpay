@@ -1,32 +1,63 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { TransactionFeed } from "@/components/TransactionFeed";
 import { WalletCard } from "@/components/WalletCard";
-import { simClient, DuneWalletData } from "@/lib/simClient";
-import { useLiveTransactionStore } from "@/lib/store";
+import { simClient, DuneWalletData, Transaction } from "@/lib/simClient";
 
 export default function GlobalFlowPage() {
   const [topWallets, setTopWallets] = useState<DuneWalletData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const { addTransactions } = useLiveTransactionStore();
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
 
-  useEffect(() => {
-    const loadWallets = async () => {
-      setIsLoading(true);
+  const loadInitialData = useCallback(async () => {
+    setIsLoading(true);
+    try {
       const mockAddresses = simClient.getMockWalletAddresses();
       const wallets = await Promise.all(
         mockAddresses.map((addr) => simClient.getFullWalletData(addr))
       );
       setTopWallets(wallets);
-      setIsLoading(false);
-    };
 
-    loadWallets();
+      const initialTxs = simClient.getRecentTransactions(50);
+      setTransactions(initialTxs);
+    } catch (error) {
+      console.error("Failed to load data:", error);
+    }
+    setIsLoading(false);
+  }, []);
 
-    const initialTxs = simClient.getRecentTransactions(50);
-    addTransactions(initialTxs);
-  }, [addTransactions]);
+  useEffect(() => {
+    loadInitialData();
+  }, [loadInitialData]);
+
+  useEffect(() => {
+    if (transactions.length === 0) return;
+
+    const interval = setInterval(() => {
+      const mockTx: Transaction = {
+        signature: `sig_${Math.random().toString(36).substring(7)}...`,
+        timestamp: Math.floor(Date.now() / 1000),
+        type: Math.random() > 0.5 ? "receive" : "send",
+        fromAddress: Array.from({ length: 44 }, () =>
+          "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz1234567890".charAt(
+            Math.floor(Math.random() * 58)
+          )
+        ).join(""),
+        toAddress: Array.from({ length: 44 }, () =>
+          "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz1234567890".charAt(
+            Math.floor(Math.random() * 58)
+          )
+        ).join(""),
+        amount: Math.random() * 5000 + 100,
+        fee: 0.000005,
+        status: "confirmed",
+      };
+      setTransactions((prev) => [mockTx, ...prev].slice(0, 500));
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -43,6 +74,7 @@ export default function GlobalFlowPage() {
         <div className="lg:col-span-2">
           <TransactionFeed
             title="Live PUSD Transactions"
+            transactions={transactions}
             maxHeight="max-h-[700px]"
             showFilters={true}
           />
@@ -62,7 +94,7 @@ export default function GlobalFlowPage() {
           </div>
 
           <h3 className="font-semibold text-slate-900">Top Wallets</h3>
-          
+
           {isLoading ? (
             <div className="space-y-4">
               {[1, 2, 3].map((i) => (
