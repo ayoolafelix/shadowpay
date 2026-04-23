@@ -9,18 +9,29 @@ export default function GlobalFlowPage() {
   const [topWallets, setTopWallets] = useState<DuneWalletData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [usingApi, setUsingApi] = useState(false);
 
   const loadInitialData = useCallback(async () => {
     setIsLoading(true);
     try {
+      const statusRes = await fetch("/api/status");
+      const status = await statusRes.json();
+      const usingRealApi = status.usingRealApi;
+      setUsingApi(usingRealApi);
+      
       const mockAddresses = simClient.getMockWalletAddresses();
       const wallets = await Promise.all(
         mockAddresses.map((addr) => simClient.getFullWalletData(addr))
       );
       setTopWallets(wallets);
 
-      const initialTxs = simClient.getRecentTransactions(50);
-      setTransactions(initialTxs);
+      if (usingRealApi) {
+        const allTxs = wallets.flatMap(w => w.transactions).sort((a, b) => b.timestamp - a.timestamp);
+        setTransactions(allTxs.slice(0, 100));
+      } else {
+        const initialTxs = simClient.getRecentTransactions(50);
+        setTransactions(initialTxs);
+      }
     } catch (error) {
       console.error("Failed to load data:", error);
     }
@@ -82,14 +93,25 @@ export default function GlobalFlowPage() {
 
         <div className="space-y-4">
           <div className="bg-gradient-to-br from-cyan-500 to-cyan-600 rounded-xl p-6 text-white">
-            <p className="text-cyan-100 text-sm">Network Status</p>
-            <p className="text-3xl font-bold mt-2">Operational</p>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-cyan-100 text-sm">Network Status</p>
+                <p className="text-3xl font-bold mt-2">Operational</p>
+              </div>
+              <div className="text-right">
+                <div className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${
+                  usingApi ? "bg-emerald-400 text-emerald-900" : "bg-amber-400 text-amber-900"
+                }`}>
+                  {usingApi ? "Live API" : "Mock Data"}
+                </div>
+              </div>
+            </div>
             <div className="flex items-center space-x-2 mt-3">
               <span className="relative flex h-2 w-2">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
               </span>
-              <span className="text-sm text-cyan-100">Syncing data...</span>
+              <span className="text-sm text-cyan-100">{usingApi ? "Connected to Dune SIM" : "Simulating data..."}</span>
             </div>
           </div>
 

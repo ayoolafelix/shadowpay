@@ -1,5 +1,3 @@
-import { formatUsd, formatTimestamp } from "./formatters";
-
 export interface WalletBalance {
   address: string;
   pusdBalance: number;
@@ -87,98 +85,229 @@ function generateMockTransactions(address: string, count: number): Transaction[]
 class DuneSimClient {
   private apiKey: string;
   private baseUrl: string = "https://api.dune.com/api/v1";
-  private useMockData: boolean = true;
+  private useRealApi: boolean = false;
+  private queryCache: Map<string, { data: any; timestamp: number }> = new Map();
+  private cacheTimeout: number = 30000;
 
   constructor(apiKey?: string) {
     this.apiKey = apiKey || process.env.NEXT_PUBLIC_DUNE_API_KEY || "";
-    this.useMockData = !this.apiKey;
+    this.useRealApi = !!this.apiKey;
+    
+    if (typeof window !== 'undefined' && this.useRealApi) {
+      console.log("Dune SIM: Connected to real API");
+    } else if (typeof window !== 'undefined') {
+      console.log("Dune SIM: Using mock data (no API key)");
+    }
+  }
+
+  isUsingRealApi(): boolean {
+    return this.useRealApi;
+  }
+
+  private async executeQuery(sql: string, timeout: number = 30): Promise<any[]> {
+    if (!this.useRealApi) return [];
+
+    const cacheKey = sql;
+    const cached = this.queryCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.cacheTimeout) {
+      return cached.data;
+    }
+
+    try {
+      const response = await fetch(`${this.baseUrl}/sql/execute`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-dune-api-key": this.apiKey,
+        },
+        body: JSON.stringify({
+          query: sql,
+          performance: "medium",
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        console.error("Dune SQL error:", error);
+        return [];
+      }
+
+      const result = await response.json();
+      const executionId = result.execution_id;
+
+      const maxAttempts = timeout * 2;
+      let attempts = 0;
+      while (attempts < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        const statusRes = await fetch(
+          `${this.baseUrl}/execution/${executionId}/status`,
+          { headers: { "x-dune-api-key": this.apiKey } }
+        );
+        
+        const status = await statusRes.json();
+        if (status.state === "QUERY_STATE_COMPLETED") {
+          const resultsRes = await fetch(
+            `${this.baseUrl}/execution/${executionId}/results`,
+            { headers: { "x-dune-api-key": this.apiKey } }
+          );
+          const results = await resultsRes.json();
+          const data = results.result?.rows || [];
+          this.queryCache.set(cacheKey, { data, timestamp: Date.now() });
+          return data;
+        } else if (status.state === "QUERY_STATE_FAILED") {
+          console.error("Query failed:", status);
+          return [];
+        }
+        attempts++;
+      }
+      return [];
+    } catch (error) {
+      console.error("Dune query error:", error);
+      return [];
+    }
   }
 
   async getWalletBalance(walletAddress: string): Promise<WalletBalance> {
-    if (this.useMockData) {
-      return {
-        address: walletAddress,
-        pusdBalance: Math.random() * 100000 + 1000,
-        solBalance: Math.random() * 10 + 0.1,
-        lastUpdated: Math.floor(Date.now() / 1000),
-      };
+    if (this.useRealApi) {
+      const sql = `
+        SELECT 
+          address,
+          balance,
+          balance_usd
+        FROM balances.spl_latest
+        WHERE blockchain = 'solana'
+          AND address = '${walletAddress}'
+          AND token_address = 'PUSD_TOKEN_MINT'
+      `;
+      
+      const results = await this.executeQuery(sql);
+      if (results.length > 0) {
+        return {
+          address: walletAddress,
+          pusdBalance: results[0].balance || 0,
+          solBalance: 0,
+          lastUpdated: Math.floor(Date.now() / 1000),
+        };
+      }
     }
 
-    try {
-      const response = await fetch(
-        `${this.baseUrl}/balance/${walletAddress}`,
-        {
-          headers: {
-            "x-dune-api-key": this.apiKey,
-          },
-        }
-      );
-      const data = await response.json();
-      return {
-        address: walletAddress,
-        pusdBalance: data.pusd_balance || 0,
-        solBalance: data.sol_balance || 0,
-        lastUpdated: Math.floor(Date.now() / 1000),
-      };
-    } catch {
-      return {
-        address: walletAddress,
-        pusdBalance: 0,
-        solBalance: 0,
-        lastUpdated: Math.floor(Date.now() / 1000),
-      };
-    }
+    return {
+      address: walletAddress,
+      pusdBalance: Math.random() * 100000 + 1000,
+      solBalance: Math.random() * 10 + 0.1,
+      lastUpdated: Math.floor(Date.now() / 1000),
+    };
   }
 
   async getTransactionHistory(walletAddress: string): Promise<Transaction[]> {
-    if (this.useMockData) {
-      return generateMockTransactions(walletAddress, 50);
+    if (this.useRealApi) {
+      const sql = `
+        SELECT 
+          block_time,
+          tx_from,
+          tx_to,
+          value,
+          tx_hash,
+          success
+        FROM solana.transactions
+        WHERE (tx_from = '${walletAddress}' OR tx_to = '${walletAddress}')
+          AND block_time > NOW() - INTERVAL '30' DAY
+        ORDER BY block_time DESC
+        LIMIT 100
+      `;
+      
+      const results = await this.executeQuery(sql);
+      if (results.length > 0) {
+        return results.map((row: any) => ({
+          signature: row.tx_hash || "",
+          timestamp: row.block_time ? Math.floor(new Date(row.block_time).getTime() / 1000) : Math.floor(Date.now() / 1000),
+          type: row.tx_from === walletAddress ? "send" : "receive",
+          fromAddress: row.tx_from || "",
+          toAddress: row.tx_to || "",
+          amount: row.value || 0,
+          fee: 0.000005,
+          status: row.success !== false ? "confirmed" : "failed",
+        }));
+      }
     }
 
-    try {
-      const response = await fetch(
-        `${this.baseUrl}/transactions/${walletAddress}`,
-        {
-          headers: {
-            "x-dune-api-key": this.apiKey,
-          },
-        }
-      );
-      const data = await response.json();
-      return data.transactions || [];
-    } catch {
-      return generateMockTransactions(walletAddress, 50);
-    }
+    return generateMockTransactions(walletAddress, 50);
   }
 
   async getTokenTransfers(walletAddress: string): Promise<TokenTransfer[]> {
-    if (this.useMockData) {
-      const txs = generateMockTransactions(walletAddress, 30);
-      return txs.map((tx) => ({
-        signature: tx.signature,
-        timestamp: tx.timestamp,
-        fromAddress: tx.fromAddress,
-        toAddress: tx.toAddress,
-        amount: tx.amount,
-        tokenSymbol: "PUSD",
-        tokenMint: "PUSD_MINT_ADDRESS",
-      }));
+    if (this.useRealApi) {
+      const sql = `
+        SELECT 
+          block_time,
+          from_account,
+          to_account,
+          amount,
+          tx_hash,
+          mint
+        FROM solana.spl_transfers
+        WHERE from_account = '${walletAddress}' OR to_account = '${walletAddress}'
+          AND block_time > NOW() - INTERVAL '30' DAY
+        ORDER BY block_time DESC
+        LIMIT 50
+      `;
+      
+      const results = await this.executeQuery(sql);
+      if (results.length > 0) {
+        return results.map((row: any) => ({
+          signature: row.tx_hash || "",
+          timestamp: row.block_time ? Math.floor(new Date(row.block_time).getTime() / 1000) : Math.floor(Date.now() / 1000),
+          fromAddress: row.from_account || "",
+          toAddress: row.to_account || "",
+          amount: row.amount || 0,
+          tokenSymbol: "SPL",
+          tokenMint: row.mint || "",
+        }));
+      }
     }
 
-    try {
-      const response = await fetch(
-        `${this.baseUrl}/transfers/${walletAddress}`,
-        {
-          headers: {
-            "x-dune-api-key": this.apiKey,
-          },
-        }
-      );
-      const data = await response.json();
-      return data.transfers || [];
-    } catch {
-      return [];
+    const txs = generateMockTransactions(walletAddress, 30);
+    return txs.map((tx) => ({
+      signature: tx.signature,
+      timestamp: tx.timestamp,
+      fromAddress: tx.fromAddress,
+      toAddress: tx.toAddress,
+      amount: tx.amount,
+      tokenSymbol: "PUSD",
+      tokenMint: "PUSD_MINT_ADDRESS",
+    }));
+  }
+
+  async getRecentNetworkActivity(): Promise<Transaction[]> {
+    if (this.useRealApi) {
+      const sql = `
+        SELECT 
+          block_time,
+          tx_from,
+          tx_to,
+          value,
+          tx_hash
+        FROM solana.transactions
+        WHERE block_time > NOW() - INTERVAL '1' HOUR
+        ORDER BY block_time DESC
+        LIMIT 100
+      `;
+      
+      const results = await this.executeQuery(sql);
+      if (results.length > 0) {
+        return results.map((row: any) => ({
+          signature: row.tx_hash || "",
+          timestamp: row.block_time ? Math.floor(new Date(row.block_time).getTime() / 1000) : Math.floor(Date.now() / 1000),
+          type: Math.random() > 0.5 ? "send" : "receive",
+          fromAddress: row.tx_from || "",
+          toAddress: row.tx_to || "",
+          amount: row.value || 0,
+          fee: 0.000005,
+          status: "confirmed",
+        }));
+      }
     }
+    return [];
   }
 
   async getWalletMetrics(walletAddress: string): Promise<WalletMetrics> {
@@ -233,8 +362,10 @@ class DuneSimClient {
   subscribeToWallet(
     walletAddress: string,
     callback: (data: DuneWalletData) => void,
-    interval: number = 5000
+    interval: number = 10000
   ): () => void {
+    this.queryCache.clear();
+    
     const fetchData = async () => {
       const data = await this.getFullWalletData(walletAddress);
       callback(data);
